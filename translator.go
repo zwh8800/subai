@@ -13,7 +13,7 @@ import (
 )
 
 type Translator struct {
-	model   model.ChatModel
+	model   model.ToolCallingChatModel
 	context string
 }
 
