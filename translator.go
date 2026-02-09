@@ -239,25 +239,104 @@ func (t *Translator) TranslateGroups(ctx context.Context, groups []SubtitleGroup
 				log.Printf("[分组翻译] 第 %d 次重试", retry)
 			}
 
+			// 将 expectedCount 存入 context
+			ctxWithUserData := context.WithValue(ctx, submitTranslationUserdataKey, &SubmitTranslationUserdata{
+				ExpectedCount: len(group.Indices),
+			})
+
 			log.Printf("[分组翻译] 原始输入: %s", string(jsonArray))
-			resp, err := t.model.Generate(ctx, messages)
+			resp, err := t.model.Generate(ctxWithUserData, messages)
 			if err != nil {
 				log.Printf("[分组翻译] 翻译失败: %v", err)
 				return nil, fmt.Errorf("failed to translate group: %w", err)
 			}
 
-			// 处理tool_call，并通过tool_call拿到翻译结果
+			log.Printf("[分组翻译] 响应内容: %s", string(resp.Content))
+			log.Printf("[分组翻译] ToolCalls 数据: %s", tojson(resp.ToolCalls))
 
-			if len(translations) != len(group.Indices) {
-				log.Printf("[分组翻译] 警告: 翻译行数 %d 与输入行数 %d 不匹配", len(translations), len(group.Indices))
-				if retry < maxRetries-1 {
-					messages = append(messages, schema.AssistantMessage(string(resp.Content), resp.ToolCalls))
-					messages = append(messages, schema.UserMessage(fmt.Sprintf("验证失败：翻译行数 %d 与预期行数 %d 不匹配。请重新翻译，确保每一行输入都对应一行输出。", len(translations), len(group.Indices))))
-					continue
+			// 处理tool_call，通过tool_call拿到翻译结果
+			if len(resp.ToolCalls) > 0 {
+				for _, toolCall := range resp.ToolCalls {
+					if toolCall.Function.Name == "submit_translation" {
+						var input SubmitTranslationReq
+						if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
+							log.Printf("[分组翻译] ToolCall 参数解析失败: %v", err)
+							if retry < maxRetries-1 {
+								messages = append(messages, schema.AssistantMessage(string(resp.Content), resp.ToolCalls))
+								messages = append(messages, schema.UserMessage("翻译提交失败，请重新提交。"))
+								continue
+							}
+							return nil, fmt.Errorf("failed to parse tool call arguments: %w", err)
+						}
+
+						log.Printf("[分组翻译] 收到翻译结果，共 %d 条", len(input.Translations))
+						translations = input.Translations
+
+						// 调用工具验证
+						validateTool := &SubmitTranslationTool{}
+						toolResult, err := validateTool.InvokableRun(ctxWithUserData, toolCall.Function.Arguments)
+						if err != nil {
+							log.Printf("[分组翻译] 工具调用失败: %v", err)
+							if retry < maxRetries-1 {
+								messages = append(messages, schema.AssistantMessage(string(resp.Content), resp.ToolCalls))
+								messages = append(messages, schema.ToolMessage(string(toolResult), toolCall.ID))
+								messages = append(messages, schema.UserMessage("工具调用错误，请重新提交翻译。"))
+								continue
+							}
+							return nil, fmt.Errorf("tool invocation failed: %w", err)
+						}
+
+						var validateOutput SubmitTranslationResp
+						if err := json.Unmarshal([]byte(toolResult), &validateOutput); err != nil {
+							log.Printf("[分组翻译] 验证结果解析失败: %v", err)
+							if retry < maxRetries-1 {
+								messages = append(messages, schema.AssistantMessage(string(resp.Content), resp.ToolCalls))
+								messages = append(messages, schema.ToolMessage(string(toolResult), toolCall.ID))
+								messages = append(messages, schema.UserMessage("验证结果解析失败，请重新提交翻译。"))
+								continue
+							}
+							return nil, fmt.Errorf("failed to parse validation result: %w", err)
+						}
+
+						if validateOutput.Valid {
+							log.Printf("[分组翻译] 验证通过")
+							break
+						} else {
+							log.Printf("[分组翻译] 验证失败: %s", validateOutput.Reason)
+							if retry < maxRetries-1 {
+								messages = append(messages, schema.AssistantMessage(string(resp.Content), resp.ToolCalls))
+								messages = append(messages, schema.ToolMessage(validateOutput.Reason, toolCall.ID))
+								messages = append(messages, schema.UserMessage(validateOutput.Reason+" 请重新翻译并提交。"))
+								continue
+							}
+						}
+					}
 				}
-			}
+				break
+			} else {
+				// 没有使用 tool_call，尝试从响应中解析
+				log.Printf("[分组翻译] 未检测到 tool_call，尝试从响应中解析")
+				err := json.Unmarshal([]byte(resp.Content), &translations)
+				if err != nil {
+					log.Printf("[分组翻译] JSON解析失败: %v", err)
+					if retry < maxRetries-1 {
+						messages = append(messages, schema.AssistantMessage(string(resp.Content), resp.ToolCalls))
+						messages = append(messages, schema.UserMessage("请使用 submit_translation 工具提交翻译结果。"))
+						continue
+					}
+					return nil, fmt.Errorf("failed to parse translation: %w", err)
+				}
 
-			break
+				if len(translations) != len(group.Indices) {
+					log.Printf("[分组翻译] 警告: 翻译行数 %d 与输入行数 %d 不匹配", len(translations), len(group.Indices))
+					if retry < maxRetries-1 {
+						messages = append(messages, schema.AssistantMessage(string(resp.Content), resp.ToolCalls))
+						messages = append(messages, schema.UserMessage(fmt.Sprintf("翻译行数不匹配。请使用 submit_translation 工具重新提交，确保每一行输入都对应一行输出。")))
+						continue
+					}
+				}
+				break
+			}
 		}
 
 		for i, idx := range group.Indices {
@@ -272,4 +351,9 @@ func (t *Translator) TranslateGroups(ctx context.Context, groups []SubtitleGroup
 	}
 
 	return results, nil
+}
+
+func tojson(v interface{}) string {
+	b, _ := json.MarshalIndent(v, "", "  ")
+	return string(b)
 }
