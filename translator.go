@@ -14,45 +14,43 @@ import (
 
 const (
 	summarizePrompt = `
-        You are a movie/series expert. 
-		Analyze the provided subtitle samples and filename to summarize the movie/series background, genre, main themes,
-		and context that would help with accurate translation. Keep it concise (2-3 sentences)."
+        您是一位电影/剧集专家。
+		请分析提供的字幕样本和文件名，总结电影/剧集的背景、类型、主要主题，
+		以及有助于准确翻译的上下文信息。请尽量简洁（2-3句话）。
         `
 	translatePrompt = `
-		You are a professional movie/series subtitle translator. I will give you a JSON array containing %d English subtitle lines. 
-		Your task is to translate each line to Chinese considering this context.
+		您是一位专业的电影/电视剧字幕翻译。我将提供一个长度为 %d 的英文字幕 JSON 数组。
+		您的任务是根据上下文将数组中每一项翻译成中文。数组是电影中时间相近的对话，翻译时请考虑上下文。
 		
-		IMPORTANT: After translating, you MUST call the submit_translation function to submit your translation, 
-		rather than directly outputting it. 
-		The function will check if the number of translated lines matches the expected count.
-		If validation fails, you must correct your translation and try again.
+		重要提示：翻译完成后，您必须调用 "submit_translation" 函数提交您的翻译，而不是直接输出。
+		该函数会检查翻译后的数组长度是否与翻译前相同。如果验证失败，您必须更正翻译并重试。
 		
-		CRITICAL REQUIREMENTS:
-		1. Each input line must become exactly ONE output translation
-		2. Do NOT add or remove any array elements
-		3. Always use submit_translation to check your work
-		4. If validation fails, correct the translation and try again
+		关键要求：
 		
-		Expected line count: %d
+		1. 每个输入字幕必须恰好对应一条输出翻译
+		2. 请勿添加或删除任何数组元素
+		3. 始终使用 "submit_translation" 函数检查您的翻译
+		4. 如果验证失败，请更正翻译并重试
+
+		预期数组长度：%d
 		`
 	translateWithContextPrompt = `
-		You are a professional movie/series subtitle translator. I will give you a JSON array containing %d English subtitle lines. 
-		Your task is to translate each line to Chinese considering this context.
+		您是一位专业的电影/电视剧字幕翻译。我将提供一个长度为 %d 的英文字幕 JSON 数组。
+		您的任务是根据上下文将数组中每一项翻译成中文。数组是电影中时间相近的对话，翻译时请考虑上下文。
 		
-		IMPORTANT: After translating, you MUST call the submit_translation function to submit your translation, 
-		rather than directly outputting it. 
-		The function will check if the number of translated lines matches the expected count.
-		If validation fails, you must correct your translation and try again.
+		重要提示：翻译完成后，您必须调用 "submit_translation" 函数提交您的翻译，而不是直接输出。
+		该函数会检查翻译后的数组长度是否与翻译前相同。如果验证失败，您必须更正翻译并重试。
 		
-		CRITICAL REQUIREMENTS:
-		1. Each input line must become exactly ONE output translation
-		2. Do NOT add or remove any array elements
-		3. Always use submit_translation to check your work
-		4. If validation fails, correct the translation and try again
+		关键要求：
 		
-		Expected line count: %d
+		1. 每个输入字幕必须恰好对应一条输出翻译
+		2. 请勿添加或删除任何数组元素
+		3. 始终使用 "submit_translation" 函数检查您的翻译
+		4. 如果验证失败，请更正翻译并重试
+
+		预期数组长度：%d
 		
-		Movie/series context: %s
+		电影/电视剧上下文: %s
 		`
 )
 
@@ -81,7 +79,7 @@ type SubmitTranslationTool struct{}
 func (t *SubmitTranslationTool) Info() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: "submit_translation",
-		Desc: "提交翻译结果。该函数会检查翻译后的行数是否与输入行数一致。如果不一致，返回错误信息。",
+		Desc: "提交翻译结果。该函数会检查翻译后的数组长度是否与输入数组长度一致。如果不一致，返回错误信息。",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"translations": {
 				Type:     schema.Array,
@@ -109,7 +107,7 @@ func (t *SubmitTranslationTool) InvokableRun(ctx context.Context, argumentsInJSO
 	if len(input.Translations) != expectedCount {
 		output := SubmitTranslationResp{
 			Valid:  false,
-			Reason: fmt.Sprintf("翻译行数 %d 与预期行数 %d 不匹配！请重新翻译，确保每一行输入都对应一行输出。", len(input.Translations), expectedCount),
+			Reason: fmt.Sprintf("翻译后数组长度 %d 与翻译前数组长度 %d 不匹配！请重新翻译，确保数组中每一个输入都对应一个输出。", len(input.Translations), expectedCount),
 		}
 		result, _ := json.Marshal(output)
 		log.Printf("[分组翻译] 输出: %s", string(result))
@@ -118,7 +116,7 @@ func (t *SubmitTranslationTool) InvokableRun(ctx context.Context, argumentsInJSO
 
 	output := SubmitTranslationResp{
 		Valid:  true,
-		Reason: "翻译行数正确",
+		Reason: "正确",
 	}
 	result, _ := json.Marshal(output)
 	log.Printf("[分组翻译] 输出: %s", string(result))
@@ -234,6 +232,7 @@ func (t *Translator) TranslateGroups(ctx context.Context, groups []SubtitleGroup
 		var translations []string
 		maxRetries := 3
 
+	outer:
 		for retry := 0; retry < maxRetries; retry++ {
 			if retry > 0 {
 				log.Printf("[分组翻译] 第 %d 次重试", retry)
@@ -264,7 +263,7 @@ func (t *Translator) TranslateGroups(ctx context.Context, groups []SubtitleGroup
 							if retry < maxRetries-1 {
 								messages = append(messages, schema.AssistantMessage(string(resp.Content), resp.ToolCalls))
 								messages = append(messages, schema.UserMessage("翻译提交失败，请重新提交。"))
-								continue
+								continue outer
 							}
 							return nil, fmt.Errorf("failed to parse tool call arguments: %w", err)
 						}
@@ -281,7 +280,7 @@ func (t *Translator) TranslateGroups(ctx context.Context, groups []SubtitleGroup
 								messages = append(messages, schema.AssistantMessage(string(resp.Content), resp.ToolCalls))
 								messages = append(messages, schema.ToolMessage(string(toolResult), toolCall.ID))
 								messages = append(messages, schema.UserMessage("工具调用错误，请重新提交翻译。"))
-								continue
+								continue outer
 							}
 							return nil, fmt.Errorf("tool invocation failed: %w", err)
 						}
@@ -293,21 +292,21 @@ func (t *Translator) TranslateGroups(ctx context.Context, groups []SubtitleGroup
 								messages = append(messages, schema.AssistantMessage(string(resp.Content), resp.ToolCalls))
 								messages = append(messages, schema.ToolMessage(string(toolResult), toolCall.ID))
 								messages = append(messages, schema.UserMessage("验证结果解析失败，请重新提交翻译。"))
-								continue
+								continue outer
 							}
 							return nil, fmt.Errorf("failed to parse validation result: %w", err)
 						}
 
 						if validateOutput.Valid {
 							log.Printf("[分组翻译] 验证通过")
-							break
+							break outer
 						} else {
 							log.Printf("[分组翻译] 验证失败: %s", validateOutput.Reason)
 							if retry < maxRetries-1 {
 								messages = append(messages, schema.AssistantMessage(string(resp.Content), resp.ToolCalls))
 								messages = append(messages, schema.ToolMessage(validateOutput.Reason, toolCall.ID))
 								messages = append(messages, schema.UserMessage(validateOutput.Reason+" 请重新翻译并提交。"))
-								continue
+								continue outer
 							}
 						}
 					}
@@ -322,20 +321,20 @@ func (t *Translator) TranslateGroups(ctx context.Context, groups []SubtitleGroup
 					if retry < maxRetries-1 {
 						messages = append(messages, schema.AssistantMessage(string(resp.Content), resp.ToolCalls))
 						messages = append(messages, schema.UserMessage("请使用 submit_translation 工具提交翻译结果。"))
-						continue
+						continue outer
 					}
 					return nil, fmt.Errorf("failed to parse translation: %w", err)
 				}
 
 				if len(translations) != len(group.Indices) {
-					log.Printf("[分组翻译] 警告: 翻译行数 %d 与输入行数 %d 不匹配", len(translations), len(group.Indices))
+					log.Printf("[分组翻译] 警告: 翻译后数组长度 %d 与输入数组长度 %d 不匹配", len(translations), len(group.Indices))
 					if retry < maxRetries-1 {
 						messages = append(messages, schema.AssistantMessage(string(resp.Content), resp.ToolCalls))
-						messages = append(messages, schema.UserMessage(fmt.Sprintf("翻译行数不匹配。请使用 submit_translation 工具重新提交，确保每一行输入都对应一行输出。")))
-						continue
+						messages = append(messages, schema.UserMessage(fmt.Sprintf("翻译数组长度不匹配。请使用 submit_translation 工具重新提交，确保数组里每一个输入都对应一个输出。")))
+						continue outer
 					}
 				}
-				break
+				break outer
 			}
 		}
 
